@@ -1,5 +1,7 @@
 use std::{io::stdin, fmt::{Display, Debug}};
 
+use error_handling::ContextMessage;
+
 #[derive(Debug, Clone)]
 enum BinOp {
     Add,
@@ -50,21 +52,23 @@ impl Display for Expr {
     }
 }
 
+type Result<T> = std::result::Result<T, error_handling::Error<Error>>;
+
 enum Error {
     // Tokenizer errors
-    UnexpectedCharacter(usize, char, String),
+    UnexpectedCharacter(usize, char),
 
     // Parser errors
-    UnexpectedToken(usize, Token, String),
-    UnexpectedEOF(usize, String),
+    UnexpectedToken(usize, Token),
+    UnexpectedEOF(usize),
 }
 
 impl Debug for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::UnexpectedCharacter(input_index, character, context) => write!(f, "Unexpected charcter ({:?}) at input index {} (context: {})", character, input_index, context),
-            Error::UnexpectedToken(token_index, token, context) => write!(f, "Unexpected token ({:?}) at token index {} (context: {})", token, token_index, context),
-            Error::UnexpectedEOF(token_index, context) => write!(f, "Unexpected end of file at token index {} (context: {})", token_index, context),
+            Error::UnexpectedCharacter(input_index, character) => write!(f, "Unexpected charcter ({:?}) at input index {}", character, input_index),
+            Error::UnexpectedToken(token_index, token) => write!(f, "Unexpected token ({:?}) at token index {}", token, token_index),
+            Error::UnexpectedEOF(token_index) => write!(f, "Unexpected end of file at token index {}", token_index),
         }
     }
 }
@@ -97,7 +101,7 @@ impl <'a> Tokenizer<'a> {
         self.output.push(value);
     }
 
-    fn tokenize(mut self) -> Result<Vec<Token>, Error> {
+    fn tokenize(mut self) -> Result<Vec<Token>> {
         while self.index < self.input.len() {
             // Is this unwrap safe? I think so
             match self.input.get(self.index).unwrap() {
@@ -149,7 +153,7 @@ impl <'a> Tokenizer<'a> {
 
                     self.push(Token::Number(num));
                 }
-                c => return Err(Error::UnexpectedCharacter(self.index, c.clone(), "tokenizing input".to_string())),
+                c => return Err(Error::UnexpectedCharacter(self.index, c.clone()).into()).context("tokenizing input"),
             }
         }
 
@@ -157,7 +161,7 @@ impl <'a> Tokenizer<'a> {
     }
 }
 
-fn tokenize(input: &[char]) -> Result<Vec<Token>, Error> {
+fn tokenize(input: &[char]) -> Result<Vec<Token>> {
     Tokenizer{ input, index: 0, output: Vec::new() }.tokenize()
 }
 
@@ -167,7 +171,7 @@ struct Parser<'a> {
 }
 
 impl <'a> Parser<'a> {
-    fn parse_base_expression(&mut self) -> Result<Expr, Error> {
+    fn parse_base_expression(&mut self) -> Result<Expr> {
         let initial_index = self.index;
 
         match self.input.get(self.index) {
@@ -177,33 +181,33 @@ impl <'a> Parser<'a> {
             },
             Some(Token::Left) => {
                 self.index += 1;
-                let inner_expression = self.parse_expression()?;
+                let inner_expression = self.parse_expression().context("parsing parenthesized")?;
                 match self.input.get(self.index) {
                     Some(Token::Right) => {
                         self.index += 1;
                         Ok(Expr::Parenthesized(Box::new(inner_expression)))
                     },
-                    Some(token) => Err(Error::UnexpectedToken(self.index.clone(), token.clone(), "parsing closing parenthesis".to_string())),
-                    None => Err(Error::UnexpectedEOF(self.index.clone(), "parsing closing parenthesis".to_string())),
+                    Some(token) => Err(Error::UnexpectedToken(self.index.clone(), token.clone()).into()).context("parsing closing parenthesis"),
+                    None => Err(Error::UnexpectedEOF(self.index.clone()).into()).context("parsing closing parenthesis"),
                 }
             },
-            Some(token) => Err(Error::UnexpectedToken(self.index.clone(), token.clone(), "parsing base expression".to_string())),
-            None => Err(Error::UnexpectedEOF(self.index.clone(), "parsing base expression".to_string())),
+            Some(token) => Err(Error::UnexpectedToken(self.index.clone(), token.clone()).into()).context("parsing base expression"),
+            None => Err(Error::UnexpectedEOF(self.index.clone()).into()).context("parsing base expression"),
         }.or_else(|error| {
             self.index = initial_index;
             Err(error)
         })
     }
 
-    fn parse_expression(&mut self) -> Result<Expr, Error> {
-        let mut expression = self.parse_base_expression()?;
+    fn parse_expression(&mut self) -> Result<Expr> {
+        let mut expression = self.parse_base_expression().context("parsing expression")?;
 
         loop {
             match self.input.get(self.index) {
                 Some(Token::Plus) => {
                     self.index += 1;
                     let lhs = expression;
-                    let rhs = self.parse_base_expression()?;
+                    let rhs = self.parse_base_expression().context("parsing following addition expression (lhs: {})")?;
 
                     match lhs {
                         Expr::BinOp(op, e1, e2) if op.precedence() < BinOp::Add.precedence() => {
@@ -215,7 +219,7 @@ impl <'a> Parser<'a> {
                 Some(Token::Minus) => {
                     self.index += 1;
                     let lhs = expression;
-                    let rhs = self.parse_base_expression()?;
+                    let rhs = self.parse_base_expression().context("parsing following subtraction expression")?;
 
                     match lhs {
                         Expr::BinOp(op, e1, e2) if op.precedence() < BinOp::Sub.precedence() => {
@@ -227,7 +231,7 @@ impl <'a> Parser<'a> {
                 Some(Token::Asterisk) => {
                     self.index += 1;
                     let lhs = expression;
-                    let rhs = self.parse_base_expression()?;
+                    let rhs = self.parse_base_expression().context("parsing following multiplication expression")?;
 
                     match lhs {
                         Expr::BinOp(op, e1, e2) if op.precedence() < BinOp::Mul.precedence() => {
@@ -239,7 +243,7 @@ impl <'a> Parser<'a> {
                 Some(Token::Slash) => {
                     self.index += 1;
                     let lhs = expression;
-                    let rhs = self.parse_base_expression()?;
+                    let rhs = self.parse_base_expression().context("parsing following division expression")?;
 
                     match lhs {
                         Expr::BinOp(op, e1, e2) if op.precedence() < BinOp::Div.precedence() => {
@@ -251,7 +255,7 @@ impl <'a> Parser<'a> {
                 Some(Token::Caret) => {
                     self.index += 1;
                     let lhs = expression;
-                    let rhs = self.parse_base_expression()?;
+                    let rhs = self.parse_base_expression().context("parsing following exponentiation expression")?;
 
                     match lhs {
                         Expr::BinOp(op, e1, e2) if op.precedence() < BinOp::Pow.precedence() => {
@@ -261,7 +265,7 @@ impl <'a> Parser<'a> {
                     }
                 }
                 Some(Token::Right) | None => break,
-                Some(token) => return Err(Error::UnexpectedToken(self.index.clone(), token.clone(), "parsing following expression".to_string())),
+                Some(token) => return Err(Error::UnexpectedToken(self.index.clone(), token.clone()).into()).context("parsing following expression"),
             }
         }
 
@@ -269,11 +273,11 @@ impl <'a> Parser<'a> {
     }
 }
 
-fn parse_expression(input: &[Token]) -> Result<Expr, Error> {
-    Parser{ input, index: 0 }.parse_expression()
+fn parse_expression(input: &[Token]) -> Result<Expr> {
+    Parser{ input, index: 0 }.parse_expression().context("parsing root expression")
 }
 
-fn eval_expression(expr: &Expr) -> Result<f64, Error> {
+fn eval_expression(expr: &Expr) -> Result<f64> {
     match expr {
         Expr::Number(n) => Ok(n.clone()),
         Expr::Parenthesized(e) => eval_expression(&*e),
@@ -313,3 +317,4 @@ fn main() {
     let value = eval_expression(&expr).unwrap();
     println!("{}", value);
 }
+

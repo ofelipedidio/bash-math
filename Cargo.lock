@@ -3,5 +3,12 @@
 version = 3
 
 [[package]]
+name = "error_handling"
+version = "0.1.0"
+
+[[package]]
 name = "math"
 version = "0.1.0"
+dependencies = [
+ "error_handling",
+]
